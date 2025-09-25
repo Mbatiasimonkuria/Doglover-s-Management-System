@@ -1,0 +1,34 @@
+#topNav
+{
+	background-color: #0000ff;
+	height: 60px;
+}
+a:hover {
+  background-color: red;
+}
+.navLogo
+{
+	width: 120px;
+	padding: 10px 0 0 20px;
+	display: inline-block;
+}
+.cont_navTab
+{
+	display: inline-block;
+	float: right;
+	top: 17px;
+	position: relative;
+}
+.navTab
+{
+	font-weight: 600;
+	padding: 20px;
+	text-decoration: none;
+	color: white;
+}
+.login_btn
+{
+	background-color: #0000ff;
+	padding: 19px 30px;
+
+}
