@@ -1,0 +1,116 @@
+IF(CFG_Init_Trigger)THEN
+	FOR ConverterSystemIndex := 1 TO .Project_NumStabilitiSystem DO
+		//Set PID Parameters
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].xPresetOff := TRUE;
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].rOutputMax := 1.0;
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].rOutputMin :=	-1.0;
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].tCycleTime :=	T#500MS;
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].rDeadZone := (CONST_PID_Deadband_Watts/.Project_BattRatings_VA);
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].rKp := 0.6;
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].rTn := 5;
+		.Sys_P_Control_PID_Para[ConverterSystemIndex].rTd := 0; // Doing PI control only. Will tune D part later
+		
+	END_FOR
+	CFG_Init_Trigger := FALSE;
+END_IF
+
+FOR ConverterSystemIndex := 1 TO .Project_NumStabilitiSystem DO
+	
+	.Stabiliti_System[ConverterSystemIndex].ALM_Invalid_PV_P_Mode := FALSE;
+	.Stabiliti_System[ConverterSystemIndex].ALM_Invalid_PV_P_SP := FALSE;
+	.Stabiliti_System[ConverterSystemIndex].ALM_PV_P := FALSE;
+	.Stabiliti_System[ConverterSystemIndex].WRN_PV_P := FALSE;
+	.Stabiliti_System[ConverterSystemIndex].PV_P_ControlLoopEn := TRUE;
+	
+
+
+	
+	CASE .Stabiliti_System[ConverterSystemIndex].PV_P_ControlMode OF
+		0: 	// PV is not present.
+			// In this case we might want to control ESS by ESS methods. But we can also use controls below if the user only wants to  
+			IF(NOT Reset_SP[ConverterSystemIndex])THEN
+				.Stabiliti_System[ConverterSystemIndex].PV_P_Ref_pu := 0.0;
+				.PV_SP_AutoGenLimit_Kw[ConverterSystemIndex] := 0.0;
+			END_IF;
+			
+			Reset_SP[ConverterSystemIndex] := TRUE;
+			
+		1: // This is auto close loop mode with generation limit based on generaiton setpoint in watts
+			.PV_SP_GenLimit_pu[ConverterSystemIndex] := (.PV_SP_AutoGenLimit_Kw[ConverterSystemIndex] * 1000)/.Project_BattRatings_VA;
+			IF(.Stabiliti_System[ConverterSystemNum].ESS_P_ControlMode <> 0) THEN
+				.PV_SP_GenLimit_pu[ConverterSystemIndex] := MAX(-.Storage_System.ChargeLim_watts, (.PV_SP_AutoGenLimit_Kw[ConverterSystemIndex] * 1000))/.Project_BattRatings_VA;
+			END_IF
+			
+			IF(.PV_SP_GenLimit_pu[ConverterSystemIndex] < 1.02 AND .PV_SP_GenLimit_pu[ConverterSystemIndex] > -1.02) THEN
+				.Stabiliti_System[ConverterSystemIndex].PV_P_Ref_pu := .PV_SP_GenLimit_pu[ConverterSystemIndex];
+			ELSE
+				.Stabiliti_System[ConverterSystemIndex].ALM_Invalid_PV_P_SP := TRUE;
+			END_IF;
+			
+			.Stabiliti_System[ConverterSystemIndex].ALM_PV_P := NOT .PV_Plus_Storage.MeterIsWorking OR NOT .microgrid_not_active OR (.NumStabiliti_Converting = 0);
+			.Stabiliti_System[ConverterSystemIndex].WRN_PV_P := .PV_Plus_Storage.CommsLoss_WRN;
+			
+			Reset_SP[ConverterSystemIndex] := FALSE;
+			
+		2: // This is self consumption or non - export mode
+			.PV_SP_GenLimit_pu[ConverterSystemIndex] := (.Net.P_watts - (.PV_SP_SelfConsumptionLimit_Kw[ConverterSystemIndex] * 1000))/.Project_BattRatings_VA;
+			IF(.Stabiliti_System[ConverterSystemNum].ESS_P_ControlMode <> 0) THEN
+				.PV_SP_GenLimit_pu[ConverterSystemIndex] := MAX((-.Storage_System.ChargeLim_watts/.Project_BattRatings_VA), .PV_SP_GenLimit_pu[ConverterSystemIndex]);
+			END_IF
+			IF(.PV_SP_GenLimit_pu[ConverterSystemIndex] < 1.02 AND .PV_SP_GenLimit_pu[ConverterSystemIndex] > -1.02) THEN
+				.Stabiliti_System[ConverterSystemIndex].PV_P_Ref_pu := .PV_SP_GenLimit_pu[ConverterSystemIndex];
+			ELSE
+				.Stabiliti_System[ConverterSystemIndex].ALM_Invalid_PV_P_SP := TRUE;
+			END_IF
+			.PV_SP_AutoGenLimit_Kw[ConverterSystemIndex] := (.PV_SP_GenLimit_pu[ConverterSystemIndex] * .Project_BattRatings_VA)/1000.0;
+			
+			.Stabiliti_System[ConverterSystemIndex].ALM_PV_P := (NOT .PV_Plus_Storage.MeterIsWorking OR NOT .Net.MeterIsWorking OR NOT .microgrid_not_active  OR (.NumStabiliti_Converting = 0));
+			.Stabiliti_System[ConverterSystemIndex].WRN_PV_P := .PV_Plus_Storage.CommsLoss_WRN OR .PV_Plus_Storage.CommsLoss_WRN;
+			Reset_SP[ConverterSystemIndex] := FALSE;
+			
+		ELSE
+			.Stabiliti_System[ConverterSystemIndex].ALM_Invalid_PV_P_Mode := TRUE;
+			
+	END_CASE;
+	// Pause control loops
+	// .Stabiliti_System[ConverterSystemIndex].PV_P_ControlLoopEn := .Stabiliti_System[ConverterSystemIndex].WRN_PV_P;
+	.Stabiliti_System[ConverterSystemIndex].PV_P_ControlLoopEn := NOT (   .Stabiliti_System[ConverterSystemIndex].WRN_PV_P 
+																		  OR .Stabiliti_System[ConverterSystemIndex].ALM_PV_P 
+																		  OR .StabilitiStats.NumConvInGlobalCtrl = 0
+																		  OR .Storage_System.CommsLoss);
+	.Stabiliti_System[ConverterSystemIndex].PV_P_PID_ON := .Stabiliti_System[ConverterSystemIndex].PV_P_ControlLoopEn AND (.Stabiliti_System[ConverterSystemIndex].PV_P_ControlMode > 0 AND CMD_PID_ON);
+	.PV_P_Error_Watt[ConverterSystemIndex] := (.PV_Plus_Storage_pu.P - .PV_SP_GenLimit_pu[ConverterSystemIndex])* .Project_BattRatings_VA;
+	.Sys_P_Control_PID_Para[ConverterSystemIndex].rPresetValueOff := .Stabiliti_System[ConverterSystemIndex].PV_P_Final_Ref_pu; 
+
+
+	//If no storage then just do normal PV control
+	.PV_Ctrl_Ref[ConverterSystemIndex] := .Stabiliti_System[ConverterSystemIndex].PV_P_Ref_pu;
+	.PV_Ctrl_Actual[ConverterSystemIndex] := .PV_Plus_Storage_pu.P;	
+	IF(    .PV_Plus_Storage_pu.P > (.Stabiliti_System[ConverterSystemIndex].PV_P_Ref_pu + (CONST_PID_Deadband_Watts/.Project_BattRatings_VA))
+	   AND (   (ABS(.Storage_pu.P) < (ABS(.Stabiliti_System[ConverterSystemIndex].ESS_P_Ref_pu) + (CONST_PID_Deadband_Watts/.Project_BattRatings_VA))) 
+			OR .Stabiliti_System[ConverterSystemIndex].ESS_P_ControlMode = 0
+			)
+		)THEN
+		.PV_Ctrl_Ref[ConverterSystemIndex] := .Stabiliti_System[ConverterSystemIndex].PV_P_Ref_pu;
+		.PV_Ctrl_Actual[ConverterSystemIndex] := .PV_Plus_Storage_pu.P;	
+	ELSIF(     .Stabiliti_System[ConverterSystemIndex].ESS_P_ControlMode <> 0
+		 // AND (.Stabiliti_System[ConverterSystemIndex].ESS_P_Ref_pu <> 0.0 )// Stabiliti will have some aux load which will result in discharging
+				)THEN
+		.PV_Ctrl_Ref[ConverterSystemIndex] := MAX(MIN(.Stabiliti_System[ConverterSystemIndex].Allowable_Storage_watts,
+														 .Stabiliti_System[ConverterSystemIndex].ESS_P_Ref_pu*.Project_BattRatings_VA,
+														 .Storage_System.DischargeLim_watts),
+													 -.Storage_System.ChargeLim_watts)/.Project_BattRatings_VA;
+		.PV_Ctrl_Actual[ConverterSystemIndex] := .Storage_pu.P;						
+	END_IF;
+	.Sys_P_Control_PID_Para[ConverterSystemIndex].rOutputMax := .ConvInGlobal_MaxACSP_pu + CFG_Conv_AC_SP_Buffer_pu; // this is for anti wind up.
+	.Sys_P_Control_PID_Para[ConverterSystemIndex].rOutputMin := .ConvInGlobal_MinACSP_pu - CFG_Conv_AC_SP_Buffer_pu; // this is for anti wind up.
+END_FOR;
+ 
+		
+	
+	
+	
+	
+	
+	
+	
